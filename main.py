@@ -250,7 +250,8 @@ def orcamento_page():
                 ui.label('Editar / Excluir Ficha').classes('text-xl font-bold mb-4 text-gray-800')
                 
                 edit_id = ui.input('ID').classes('hidden')
-                edit_num = ui.input('Nº Ficha').classes('w-full').props('outlined dense readonly')
+                # Habilitada a edição do Nº da Ficha:
+                edit_num = ui.input('Nº Ficha').classes('w-full').props('outlined dense')
                 edit_acao = ui.input('Ação').classes('w-full').props('outlined dense')
                 edit_natureza = ui.input('Natureza da despesa').classes('w-full').props('outlined dense')
                 edit_desc = ui.textarea('Detalhamento').classes('w-full').props('outlined dense autogrow rows=1')
@@ -262,17 +263,23 @@ def orcamento_page():
                 edit_gastos.on('update:model-value', lambda e: setattr(edit_gastos, 'value', formatar_moeda_calculadora(e.args)))
 
                 def salvar_edicao():
+                    if not edit_num.value or not edit_natureza.value:
+                        ui.notify('O Nº da Ficha e a Natureza não podem ficar vazios!', type='warning')
+                        return
+
                     dot_in = moeda_para_float(edit_dot.value)
                     gast_val = moeda_para_float(edit_gastos.value)
                     
                     try:
                         conn = get_db_connection()
                         cur = conn.cursor()
+                        # Atualiza o num_ficha também pelo ID único do banco de dados
                         cur.execute("""
                             UPDATE fichas_orcamentarias
-                            SET acao = %s, natureza = %s, descricao = %s, dotacao_inicial = %s, gastos = %s, link_plan = %s
+                            SET num = %s, acao = %s, natureza = %s, descricao = %s, dotacao_inicial = %s, gastos = %s, link_plan = %s
                             WHERE id = %s;
                         """, (
+                            edit_num.value,
                             edit_acao.value or '-',
                             edit_natureza.value,
                             edit_desc.value,
