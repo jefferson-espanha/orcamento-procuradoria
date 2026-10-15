@@ -4,7 +4,8 @@ from nicegui import app, ui
 # Garante acesso aos arquivos estáticos se rodar este arquivo de forma independente
 app.add_static_files('/static', '.')
 
-@ui.page('/orcamento')
+# Alterado de '/orcamento' para '/' para ser a página inicial do app no Render
+@ui.page('/')
 def orcamento_page():
     ui.colors(primary='#1e3a8a')
 
@@ -14,7 +15,7 @@ def orcamento_page():
             ui.icon('account_balance_wallet', size='32px').classes('text-blue-300')
             ui.label('Procuradoria do Município').classes('text-2xl font-bold tracking-wide')
         
-        ui.button('Voltar ao Portal', on_click=lambda: ui.open('/')).classes('bg-blue-800 text-white text-sm')
+        ui.button('Voltar ao Portal', on_click=lambda: ui.open('https://portal-sistemas-procuradoria.onrender.com')).classes('bg-blue-800 text-white text-sm')
 
     # Container Principal
     with ui.column().classes('w-full p-6 max-w-6xl mx-auto items-center'):
@@ -92,7 +93,7 @@ def orcamento_page():
 
             tabela = ui.table(columns=colunas, rows=[], row_key='num').classes('w-full shadow-md rounded-xl border border-gray-100 bg-white')
 
-# Rodapé
+    # Rodapé
     with ui.footer().classes('bg-gray-100 text-gray-600 p-4 text-center text-sm border-t mt-12'):
         ui.label('Prefeitura Municipal de Francisco Morato — Procuradoria do Município © 2026')
 
