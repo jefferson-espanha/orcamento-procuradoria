@@ -17,20 +17,23 @@ BANCO_DADOS = {
     }
 }
 
-# Função auxiliar para formatar texto puro de dígitos no estilo calculadora (R$ 0,00)
-def formatar_moeda_calculadora(valor_str):
-    digitos = re.sub(r'\D', '', str(valor_str or ''))
-    if not digitos:
-        return 'R$ 0,00'
-    valor_centavos = int(digitos) / 100.0
-    return f"R$ {valor_centavos:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-
-# Converte o texto formatado para float puro (para cálculos)
-def moeda_para_float(texto_moeda):
-    digitos = re.sub(r'\D', '', str(texto_moeda or ''))
+# Converte qualquer texto de moeda ou número para float de forma precisa
+def moeda_para_float(texto):
+    if isinstance(texto, (int, float)):
+        return float(texto)
+    digitos = re.sub(r'\D', '', str(texto or ''))
     if not digitos:
         return 0.0
     return int(digitos) / 100.0
+
+# Formata float puro para R$ X.XXX,XX
+def float_para_moeda(valor_float):
+    return f"R$ {valor_float:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+
+# Formatação em tempo real estilo calculadora ao digitar
+def formatar_moeda_calculadora(valor_str):
+    val_float = moeda_para_float(valor_str)
+    return float_para_moeda(val_float)
 
 @ui.page('/')
 def orcamento_page():
@@ -134,9 +137,12 @@ def orcamento_page():
                         'acao': acao_ficha.value or '-',
                         'natureza': natureza_despesa.value,
                         'descricao': descricao.value or 'Sem detalhamento',
-                        'dot_in_txt': formatar_moeda_calculadora(dotacao_inicial.value),
-                        'gastos_txt': formatar_moeda_calculadora(gastos.value),
-                        'saldo_restante_txt': formatar_moeda_calculadora(saldo_restante * 100),
+                        'dot_in_val': dot_in,
+                        'gastos_val': gastos_val,
+                        'saldo_restante_val': saldo_restante,
+                        'dot_in_txt': float_para_moeda(dot_in),
+                        'gastos_txt': float_para_moeda(gastos_val),
+                        'saldo_restante_txt': float_para_moeda(saldo_restante),
                         'link_plan': link_planejamento.value or ''
                     }
                     
@@ -159,8 +165,10 @@ def orcamento_page():
 
         # Seção de Tabela de Informações
         with ui.column().classes('w-full mt-4'):
-            ui.label('Fichas do Exercício (Duplo clique para Alterar / Excluir)').classes('text-lg font-bold text-gray-800 mb-2')
-            
+            with ui.row().classes('w-full justify-between items-center mb-2'):
+                ui.label('Fichas do Exercício (Duplo clique para Alterar / Excluir)').classes('text-lg font-bold text-gray-800')
+                ui.button('Gerar Relatório PDF 🖨️', on_click=lambda: gerar_pdf_relatorio(select_ano.value)).classes('bg-emerald-800 text-white text-xs font-bold py-2 px-4 rounded-lg shadow-sm')
+
             colunas = [
                 {'name': 'num', 'label': 'Nº Ficha', 'field': 'num', 'align': 'left', 'sortable': True},
                 {'name': 'acao', 'label': 'Ação', 'field': 'acao', 'align': 'left', 'sortable': True},
@@ -208,9 +216,12 @@ def orcamento_page():
                             f['acao'] = edit_acao.value or '-'
                             f['natureza'] = edit_natureza.value
                             f['descricao'] = edit_desc.value
-                            f['dot_in_txt'] = formatar_moeda_calculadora(edit_dot.value)
-                            f['gastos_txt'] = formatar_moeda_calculadora(edit_gastos.value)
-                            f['saldo_restante_txt'] = formatar_moeda_calculadora(saldo_restante * 100)
+                            f['dot_in_val'] = dot_in
+                            f['gastos_val'] = gast_val
+                            f['saldo_restante_val'] = saldo_restante
+                            f['dot_in_txt'] = float_para_moeda(dot_in)
+                            f['gastos_txt'] = float_para_moeda(gast_val)
+                            f['saldo_restante_txt'] = float_para_moeda(saldo_restante)
                             f['link_plan'] = edit_link_plan.value or ''
                             break
                     
@@ -264,6 +275,80 @@ def orcamento_page():
     # Rodapé
     with ui.footer().classes('bg-gray-100 text-gray-600 p-4 text-center text-sm border-t mt-12'):
         ui.label('Prefeitura Municipal de Francisco Morato — Procuradoria do Município © 2026')
+
+# Gerador do Relatório de Impressão / PDF
+def gerar_pdf_relatorio(ano):
+    fichas = BANCO_DADOS.get(ano, {}).get('fichas', [])
+    
+    total_dot = sum(f.get('dot_in_val', 0.0) for f in fichas)
+    total_gast = sum(f.get('gastos_val', 0.0) for f in fichas)
+    total_saldo = total_dot - total_gast
+    
+    linhas_html = ""
+    for f in fichas:
+        linhas_html += f"""
+        <tr>
+            <td>{f.get('num', '-')}</td>
+            <td>{f.get('acao', '-')}</td>
+            <td>{f.get('natureza', '-')}</td>
+            <td>{f.get('descricao', '-')}</td>
+            <td style="text-align: right;">{f.get('dot_in_txt', 'R$ 0,00')}</td>
+            <td style="text-align: right;">{f.get('gastos_txt', 'R$ 0,00')}</td>
+            <td style="text-align: right; font-weight: bold;">{f.get('saldo_restante_txt', 'R$ 0,00')}</td>
+        </tr>
+        """
+        
+    html_relatorio = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Relatório Orçamentário {ano} - Procuradoria</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; padding: 20px; color: #333; }}
+            h1 {{ text-align: center; color: #1e3a8a; margin-bottom: 5px; }}
+            h3 {{ text-align: center; color: #555; font-weight: normal; margin-top: 0; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 12px; }}
+            th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
+            th {{ background-color: #1e3a8a; color: white; }}
+            tr:nth-child(even) {{ background-color: #f9f9f9; }}
+            .totais {{ margin-top: 20px; text-align: right; font-size: 14px; font-weight: bold; }}
+        </style>
+    </head>
+    <body onload="window.print()">
+        <h1>PREFEITURA MUNICIPAL DE FRANCISCO MORATO</h1>
+        <h3>Procuradoria do Município — Relatório de Fichas Orçamentárias ({ano})</h3>
+        <hr>
+        <table>
+            <thead>
+                <tr>
+                    <th>Nº Ficha</th>
+                    <th>Ação</th>
+                    <th>Natureza da Despesa</th>
+                    <th>Detalhamento</th>
+                    <th>Dotação Inicial</th>
+                    <th>Despesas / Empenhos</th>
+                    <th>Saldo Restante</th>
+                </tr>
+            </thead>
+            <tbody>
+                {linhas_html if linhas_html else '<tr><td colspan="7" style="text-align:center;">Nenhuma ficha cadastrada neste exercício.</td></tr>'}
+            </tbody>
+        </table>
+        <div class="totais">
+            <p>Total Dotação Inicial: {float_para_moeda(total_dot)}</p>
+            <p>Total Despesas / Empenhos: {float_para_moeda(total_gast)}</p>
+            <p style="color: #047857; font-size: 16px;">Saldo Restante Total: {float_para_moeda(total_saldo)}</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Abre janela de impressão embutida
+    ui.run_javascript(f"""
+        var win = window.open("", "_blank");
+        win.document.write(`{html_relatorio}`);
+        win.document.close();
+    """)
 
 if __name__ in {"__main__", "__mp_main__"}:
     PORT = int(os.environ.get('PORT', 8080))
