@@ -1,21 +1,53 @@
 import os
 import re
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from nicegui import app, ui
 
 # Libera arquivos estáticos
 app.add_static_files('/static', '.')
 
-# Estrutura de dados em memória por Ano Exercício
-BANCO_DADOS = {
-    '2026': {
-        'link_dotacao': 'https://www.franciscomorato.sp.gov.br/orcamento-2026',
-        'fichas': []
-    },
-    '2025': {
-        'link_dotacao': '',
-        'fichas': []
-    }
-}
+# String de Conexão do PostgreSQL (Neon)
+DATABASE_URL = "postgresql://neondb_owner:npg_6neZF2QsdbMS@ep-rough-breeze-b8gpvf3y-pooler.c-14.us-east-1.aws.neon.tech/neondb?sslmode=require"
+
+# Helper para obter conexão com o BD
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+
+# Inicializa as tabelas no PostgreSQL se não existirem
+def inicializar_banco():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Tabela de Fichas
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fichas_orcamentarias (
+                id SERIAL PRIMARY KEY,
+                ano VARCHAR(4) NOT NULL,
+                num VARCHAR(50) NOT NULL,
+                acao VARCHAR(100),
+                natureza VARCHAR(255) NOT NULL,
+                descricao TEXT,
+                dotacao_inicial NUMERIC(15, 2) DEFAULT 0.00,
+                gastos NUMERIC(15, 2) DEFAULT 0.00,
+                link_plan TEXT
+            );
+        """)
+        
+        # Tabela de Configurações do Exercício (Links por ano)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS config_exercicios (
+                ano VARCHAR(4) PRIMARY KEY,
+                link_dotacao TEXT
+            );
+        """)
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Erro ao inicializar o banco de dados: {e}")
 
 # Converte qualquer texto de moeda ou número para float de forma precisa
 def moeda_para_float(texto):
@@ -28,12 +60,16 @@ def moeda_para_float(texto):
 
 # Formata float puro para R$ X.XXX,XX
 def float_para_moeda(valor_float):
-    return f"R$ {valor_float:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+    val = float(valor_float or 0.0)
+    return f"R$ {val:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
 
 # Formatação em tempo real estilo calculadora ao digitar
 def formatar_moeda_calculadora(valor_str):
     val_float = moeda_para_float(valor_str)
     return float_para_moeda(val_float)
+
+# Executa a inicialização do banco ao carregar o script
+inicializar_banco()
 
 @ui.page('/')
 def orcamento_page():
@@ -74,8 +110,20 @@ def orcamento_page():
             with ui.row().classes('gap-2'):
                 def salvar_link():
                     ano = select_ano.value
-                    BANCO_DADOS[ano]['link_dotacao'] = input_link_dotacao.value
-                    ui.notify(f'Link da dotação de {ano} atualizado!', type='positive')
+                    try:
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        cur.execute("""
+                            INSERT INTO config_exercicios (ano, link_dotacao)
+                            VALUES (%s, %s)
+                            ON CONFLICT (ano) DO UPDATE SET link_dotacao = EXCLUDED.link_dotacao;
+                        """, (ano, input_link_dotacao.value))
+                        conn.commit()
+                        cur.close()
+                        conn.close()
+                        ui.notify(f'Link da dotação de {ano} salvo no banco!', type='positive')
+                    except Exception as err:
+                        ui.notify(f'Erro ao salvar link: {err}', type='negative')
 
                 def abrir_link_dotacao():
                     url = input_link_dotacao.value
@@ -121,7 +169,7 @@ def orcamento_page():
                 dotacao_inicial.on('update:model-value', aplicar_mascara_dotacao)
                 gastos.on('update:model-value', aplicar_mascara_gastos)
 
-                # Cadastrar Ficha
+                # Cadastrar Ficha no PostgreSQL
                 def salvar_ficha():
                     ano = select_ano.value
                     if not num_ficha.value or not natureza_despesa.value:
@@ -130,35 +178,42 @@ def orcamento_page():
                     
                     dot_in = moeda_para_float(dotacao_inicial.value)
                     gastos_val = moeda_para_float(gastos.value)
-                    saldo_restante = dot_in - gastos_val
                     
-                    nova_ficha = {
-                        'num': num_ficha.value,
-                        'acao': acao_ficha.value or '-',
-                        'natureza': natureza_despesa.value,
-                        'descricao': descricao.value or 'Sem detalhamento',
-                        'dot_in_val': dot_in,
-                        'gastos_val': gastos_val,
-                        'saldo_restante_val': saldo_restante,
-                        'dot_in_txt': float_para_moeda(dot_in),
-                        'gastos_txt': float_para_moeda(gastos_val),
-                        'saldo_restante_txt': float_para_moeda(saldo_restante),
-                        'link_plan': link_planejamento.value or ''
-                    }
-                    
-                    BANCO_DADOS[ano]['fichas'].append(nova_ficha)
-                    atualizar_tabela()
-                    
-                    # Limpeza dos campos
-                    num_ficha.value = ''
-                    acao_ficha.value = ''
-                    natureza_despesa.value = ''
-                    descricao.value = ''
-                    dotacao_inicial.value = 'R$ 0,00'
-                    gastos.value = 'R$ 0,00'
-                    link_planejamento.value = ''
-                    
-                    ui.notify(f'Ficha cadastrada com sucesso no exercício de {ano}!', type='positive')
+                    try:
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        cur.execute("""
+                            INSERT INTO fichas_orcamentarias 
+                            (ano, num, acao, natureza, descricao, dotacao_inicial, gastos, link_plan)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                        """, (
+                            ano, 
+                            num_ficha.value, 
+                            acao_ficha.value or '-', 
+                            natureza_despesa.value, 
+                            descricao.value or 'Sem detalhamento', 
+                            dot_in, 
+                            gastos_val, 
+                            link_planejamento.value or ''
+                        ))
+                        conn.commit()
+                        cur.close()
+                        conn.close()
+
+                        atualizar_tabela()
+                        
+                        # Limpeza dos campos
+                        num_ficha.value = ''
+                        acao_ficha.value = ''
+                        natureza_despesa.value = ''
+                        descricao.value = ''
+                        dotacao_inicial.value = 'R$ 0,00'
+                        gastos.value = 'R$ 0,00'
+                        link_planejamento.value = ''
+                        
+                        ui.notify(f'Ficha cadastrada e salva no PostgreSQL ({ano})!', type='positive')
+                    except Exception as err:
+                        ui.notify(f'Erro ao salvar ficha: {err}', type='negative')
 
                 with ui.row().classes('w-full justify-end mt-2'):
                     ui.button('Cadastrar Ficha', icon='add', on_click=salvar_ficha).classes('bg-blue-900 text-white font-bold py-2 px-6 rounded-lg shadow-md')
@@ -180,7 +235,7 @@ def orcamento_page():
                 {'name': 'link_plan', 'label': 'Link Plan. Ano Seguinte', 'field': 'link_plan', 'align': 'center'},
             ]
 
-            tabela = ui.table(columns=colunas, rows=[], row_key='num').classes('w-full shadow-md rounded-xl border border-gray-100 bg-white cursor-pointer')
+            tabela = ui.table(columns=colunas, rows=[], row_key='id').classes('w-full shadow-md rounded-xl border border-gray-100 bg-white cursor-pointer')
             
             # Formatação da coluna de link do planejamento na tabela
             tabela.add_slot('body-cell-link_plan', '''
@@ -194,6 +249,7 @@ def orcamento_page():
             with ui.dialog() as modal_edicao, ui.card().classes('w-full max-w-lg p-6'):
                 ui.label('Editar / Excluir Ficha').classes('text-xl font-bold mb-4 text-gray-800')
                 
+                edit_id = ui.input('ID').classes('hidden')
                 edit_num = ui.input('Nº Ficha').classes('w-full').props('outlined dense readonly')
                 edit_acao = ui.input('Ação').classes('w-full').props('outlined dense')
                 edit_natureza = ui.input('Natureza da despesa').classes('w-full').props('outlined dense')
@@ -206,35 +262,49 @@ def orcamento_page():
                 edit_gastos.on('update:model-value', lambda e: setattr(edit_gastos, 'value', formatar_moeda_calculadora(e.args)))
 
                 def salvar_edicao():
-                    ano = select_ano.value
                     dot_in = moeda_para_float(edit_dot.value)
                     gast_val = moeda_para_float(edit_gastos.value)
-                    saldo_restante = dot_in - gast_val
                     
-                    for f in BANCO_DADOS[ano]['fichas']:
-                        if f['num'] == edit_num.value:
-                            f['acao'] = edit_acao.value or '-'
-                            f['natureza'] = edit_natureza.value
-                            f['descricao'] = edit_desc.value
-                            f['dot_in_val'] = dot_in
-                            f['gastos_val'] = gast_val
-                            f['saldo_restante_val'] = saldo_restante
-                            f['dot_in_txt'] = float_para_moeda(dot_in)
-                            f['gastos_txt'] = float_para_moeda(gast_val)
-                            f['saldo_restante_txt'] = float_para_moeda(saldo_restante)
-                            f['link_plan'] = edit_link_plan.value or ''
-                            break
-                    
-                    atualizar_tabela()
-                    modal_edicao.close()
-                    ui.notify('Ficha alterada com sucesso!', type='positive')
+                    try:
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        cur.execute("""
+                            UPDATE fichas_orcamentarias
+                            SET acao = %s, natureza = %s, descricao = %s, dotacao_inicial = %s, gastos = %s, link_plan = %s
+                            WHERE id = %s;
+                        """, (
+                            edit_acao.value or '-',
+                            edit_natureza.value,
+                            edit_desc.value,
+                            dot_in,
+                            gast_val,
+                            edit_link_plan.value or '',
+                            int(edit_id.value)
+                        ))
+                        conn.commit()
+                        cur.close()
+                        conn.close()
+
+                        atualizar_tabela()
+                        modal_edicao.close()
+                        ui.notify('Ficha alterada no PostgreSQL!', type='positive')
+                    except Exception as err:
+                        ui.notify(f'Erro ao atualizar ficha: {err}', type='negative')
 
                 def excluir_ficha():
-                    ano = select_ano.value
-                    BANCO_DADOS[ano]['fichas'] = [f for f in BANCO_DADOS[ano]['fichas'] if f['num'] != edit_num.value]
-                    atualizar_tabela()
-                    modal_edicao.close()
-                    ui.notify('Ficha excluída!', type='negative')
+                    try:
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM fichas_orcamentarias WHERE id = %s;", (int(edit_id.value),))
+                        conn.commit()
+                        cur.close()
+                        conn.close()
+
+                        atualizar_tabela()
+                        modal_edicao.close()
+                        ui.notify('Ficha excluída do PostgreSQL!', type='negative')
+                    except Exception as err:
+                        ui.notify(f'Erro ao excluir ficha: {err}', type='negative')
 
                 with ui.row().classes('w-full justify-between mt-4'):
                     ui.button('Excluir Ficha', color='red', on_click=excluir_ficha).classes('text-white')
@@ -245,6 +315,7 @@ def orcamento_page():
             # Ação de Duplo Clique na linha da tabela
             def on_row_dblclick(e):
                 row = e.args[1]
+                edit_id.value = str(row['id'])
                 edit_num.value = row['num']
                 edit_acao.value = row.get('acao', '')
                 edit_natureza.value = row['natureza']
@@ -256,18 +327,59 @@ def orcamento_page():
 
             tabela.on('row-dblclick', on_row_dblclick)
 
-    # Funções de Controle de Estado e Troca de Ano
+    # Funções de Controle de Estado e Consulta do BD
     def carregar_dados_ano(ano):
-        if ano not in BANCO_DADOS:
-            BANCO_DADOS[ano] = {'link_dotacao': '', 'fichas': []}
-        
-        input_link_dotacao.value = BANCO_DADOS[ano]['link_dotacao']
+        # Busca link da dotação no BD
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT link_dotacao FROM config_exercicios WHERE ano = %s;", (ano,))
+            res = cur.fetchone()
+            input_link_dotacao.value = res['link_dotacao'] if res else ''
+            cur.close()
+            conn.close()
+        except Exception:
+            input_link_dotacao.value = ''
+            
         atualizar_tabela()
 
     def atualizar_tabela():
         ano = select_ano.value
-        tabela.rows = BANCO_DADOS[ano]['fichas']
-        tabela.update()
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, num, acao, natureza, descricao, dotacao_inicial, gastos, link_plan
+                FROM fichas_orcamentarias
+                WHERE ano = %s
+                ORDER BY num ASC;
+            """, (ano,))
+            fichas = cur.fetchall()
+            cur.close()
+            conn.close()
+
+            rows = []
+            for f in fichas:
+                dot_in = float(f['dotacao_inicial'] or 0.0)
+                gastos_val = float(f['gastos'] or 0.0)
+                saldo_restante = dot_in - gastos_val
+                
+                rows.append({
+                    'id': f['id'],
+                    'num': f['num'],
+                    'acao': f['acao'] or '-',
+                    'natureza': f['natureza'],
+                    'descricao': f['descricao'],
+                    'dot_in_txt': float_para_moeda(dot_in),
+                    'gastos_txt': float_para_moeda(gastos_val),
+                    'saldo_restante_txt': float_para_moeda(saldo_restante),
+                    'link_plan': f['link_plan'] or ''
+                })
+
+            tabela.rows = rows
+            tabela.update()
+        except Exception as err:
+            ui.notify(f'Erro ao carregar dados: {err}', type='negative')
 
     # Inicializa a tela com o ano 2026
     carregar_dados_ano(select_ano.value)
@@ -276,25 +388,43 @@ def orcamento_page():
     with ui.footer().classes('bg-gray-100 text-gray-600 p-4 text-center text-sm border-t mt-12'):
         ui.label('Prefeitura Municipal de Francisco Morato — Procuradoria do Município © 2026')
 
-# Gerador do Relatório de Impressão / PDF
+# Gerador do Relatório de Impressão / PDF buscando dados direto do BD
 def gerar_pdf_relatorio(ano):
-    fichas = BANCO_DADOS.get(ano, {}).get('fichas', [])
-    
-    total_dot = sum(f.get('dot_in_val', 0.0) for f in fichas)
-    total_gast = sum(f.get('gastos_val', 0.0) for f in fichas)
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT num, acao, natureza, descricao, dotacao_inicial, gastos
+            FROM fichas_orcamentarias
+            WHERE ano = %s
+            ORDER BY num ASC;
+        """, (ano,))
+        fichas = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as err:
+        ui.notify(f'Erro ao buscar dados para o relatório: {err}', type='negative')
+        return
+
+    total_dot = sum(float(f['dotacao_inicial'] or 0.0) for f in fichas)
+    total_gast = sum(float(f['gastos'] or 0.0) for f in fichas)
     total_saldo = total_dot - total_gast
     
     linhas_html = ""
     for f in fichas:
+        dot_in = float(f['dotacao_inicial'] or 0.0)
+        gastos_val = float(f['gastos'] or 0.0)
+        saldo_rest = dot_in - gastos_val
+        
         linhas_html += f"""
         <tr>
-            <td>{f.get('num', '-')}</td>
-            <td>{f.get('acao', '-')}</td>
-            <td>{f.get('natureza', '-')}</td>
-            <td>{f.get('descricao', '-')}</td>
-            <td style="text-align: right;">{f.get('dot_in_txt', 'R$ 0,00')}</td>
-            <td style="text-align: right;">{f.get('gastos_txt', 'R$ 0,00')}</td>
-            <td style="text-align: right; font-weight: bold;">{f.get('saldo_restante_txt', 'R$ 0,00')}</td>
+            <td>{f['num']}</td>
+            <td>{f['acao'] or '-'}</td>
+            <td>{f['natureza']}</td>
+            <td>{f['descricao']}</td>
+            <td style="text-align: right;">{float_para_moeda(dot_in)}</td>
+            <td style="text-align: right;">{float_para_moeda(gastos_val)}</td>
+            <td style="text-align: right; font-weight: bold;">{float_para_moeda(saldo_rest)}</td>
         </tr>
         """
         
